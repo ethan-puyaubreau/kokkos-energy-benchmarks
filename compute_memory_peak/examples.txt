@@ -1,0 +1,34 @@
+# Examples of configurations for the compute_memory_peak benchmark
+# Pattern: [Compute x N/2] -> [Memory x 1] -> [Compute x N/2]
+
+# Basic configuration (quick test)
+# 2 compute + 1 memory + 2 compute
+./compute_memory_peak --compute-duration 100 --memory-duration 50 --intervals 4
+
+# Configuration for energy profiling (medium durations)
+# 3 compute + 1 memory + 3 compute
+./compute_memory_peak --compute-duration 200 --memory-duration 100 --intervals 6
+
+# Intensive configuration (stress test)
+# 6 compute + 1 memory + 6 compute, large arrays
+./compute_memory_peak --compute-duration 500 --memory-duration 250 --intervals 12 --array-size 5000000 --work-size 500000
+
+# Memory-focused configuration (memory-bound stress in the middle)
+# 3 compute + 1 memory (long) + 3 compute, large arrays
+./compute_memory_peak --compute-duration 150 --memory-duration 300 --intervals 6 --array-size 10000000
+
+# Compute-focused configuration (numerous compute phases)
+# 5 compute + 1 memory + 5 compute with a lot of work
+./compute_memory_peak --compute-duration 800 --memory-duration 100 --intervals 10 --work-size 1000000
+
+# Balance test (equivalent durations)
+# 4 compute + 1 memory + 4 compute, same duration
+./compute_memory_peak --compute-duration 200 --memory-duration 200 --intervals 8
+
+# Micro-benchmark configuration (short durations, many compute phases)
+# 10 compute + 1 memory + 10 compute
+./compute_memory_peak --compute-duration 25 --memory-duration 12 --intervals 20
+
+# Configuration for long benchmark (stability measurements)
+# 7 compute + 1 memory + 8 compute (15 total)
+./compute_memory_peak --compute-duration 300 --memory-duration 150 --intervals 15 --array-size 3000000 --work-size 300000
