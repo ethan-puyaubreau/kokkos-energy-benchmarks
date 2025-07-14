@@ -244,8 +244,10 @@ struct MemoryBoundKernel {
 template<typename Scalar>
 BenchmarkResult run_energy_benchmark(const BenchmarkParams& compute_params, 
                                      const BenchmarkParams& memory_params,
+                                     const ConfigurationSet& compute_config,
+                                     const ConfigurationSet& memory_config,
                                      double compute_percent, double memory_percent) {
-    size_t array_size = compute_params.N;
+    size_t array_size = std::max(compute_params.N, memory_params.N);
     
     Kokkos::View<Scalar*> data("data", array_size);
     
@@ -302,18 +304,26 @@ BenchmarkResult run_energy_benchmark(const BenchmarkParams& compute_params,
 
     Kokkos::Timer timer;
 
-    // Run compute bound kernel if needed
-    if (compute_percent > 0) {
+    // Calculate scaled iterations based on percentages and config counts
+    int compute_iterations = static_cast<int>((compute_percent / 100.0) * compute_config.count);
+    int memory_iterations = static_cast<int>((memory_percent / 100.0) * memory_config.count);
+
+    // Run compute bound kernel with scaled iterations
+    if (compute_iterations > 0) {
         ComputeBoundKernel<Scalar> compute_kernel(data, compute_params);
-        Kokkos::parallel_for("compute_bound", array_size, compute_kernel);
-        Kokkos::fence();
+        for (int iter = 0; iter < compute_iterations; iter++) {
+            Kokkos::parallel_for("compute_bound", compute_params.N, compute_kernel);
+            Kokkos::fence();
+        }
     }
 
-    // Run memory bound kernel if needed
-    if (memory_percent > 0) {
+    // Run memory bound kernel with scaled iterations
+    if (memory_iterations > 0) {
         MemoryBoundKernel<Scalar> memory_kernel(data, memory_params);
-        Kokkos::parallel_for("memory_bound", array_size, memory_kernel);
-        Kokkos::fence();
+        for (int iter = 0; iter < memory_iterations; iter++) {
+            Kokkos::parallel_for("memory_bound", memory_params.N, memory_kernel);
+            Kokkos::fence();
+        }
     }
 
     double execution_time_s = timer.seconds();
@@ -328,8 +338,25 @@ BenchmarkResult run_energy_benchmark(const BenchmarkParams& compute_params,
     }
 #endif
 
-    size_t bytes_transferred = array_size * sizeof(Scalar) * 2; // Read + Write
-    double bandwidth_gb_s = (bytes_transferred / 1e9) / execution_time_s;
+    // Calculate total bytes transferred accounting for all iterations and operations
+    size_t total_bytes_transferred = 0;
+    
+    // For compute kernel: each iteration does 1 read + 1 write per element
+    if (compute_iterations > 0) {
+        total_bytes_transferred += static_cast<size_t>(compute_iterations) * compute_params.N * sizeof(Scalar) * 2;
+    }
+    
+    // For memory kernel: more accurate calculation based on actual memory operations
+    if (memory_iterations > 0) {
+        // Each element: 1 initial read + (R * U * D * 2) memory ops + 1 final write
+        size_t memory_ops_per_element = 1 + (static_cast<size_t>(memory_params.R) * memory_params.U * memory_params.D * 2) + 1;
+        total_bytes_transferred += static_cast<size_t>(memory_iterations) * memory_params.N * sizeof(Scalar) * memory_ops_per_element;
+    }
+    
+    double bandwidth_gb_s = 0.0;
+    if (execution_time_s > 0.0) {
+        bandwidth_gb_s = (static_cast<double>(total_bytes_transferred) / 1e9) / execution_time_s;
+    }
 
     double avg_gpu_util = 0.0;
     double avg_mem_util = 0.0;
@@ -359,8 +386,14 @@ BenchmarkResult run_energy_benchmark(const BenchmarkParams& compute_params,
     }
 #endif
 
+    // Calculate total compute and memory operations for intensity metrics
+    long long total_compute_ops = static_cast<long long>(compute_iterations) * compute_params.N * 
+                                 compute_params.R * compute_params.U * compute_params.F * 2; // 2 ops per F loop
+    long long total_memory_ops = static_cast<long long>(memory_iterations) * memory_params.N * 
+                                memory_params.R * memory_params.U * memory_params.D * 2; // read + write
+
     return {compute_percent, memory_percent, bandwidth_gb_s, execution_time_s * 1000.0,
-            array_size, compute_params.F, memory_params.D,
+            array_size, static_cast<int>(total_compute_ops / 1000000), static_cast<int>(total_memory_ops / 1000000),
             avg_gpu_util, avg_mem_util, avg_power_mW, avg_sm_clock, avg_mem_clock, avg_temp_C};
 }
 
@@ -371,14 +404,18 @@ std::vector<BenchmarkResult> generate_energy_matrix(const BenchmarkConfig& confi
     // Find compute_bound and bandwidth_bound configurations
     BenchmarkParams compute_params = {};
     BenchmarkParams memory_params = {};
+    ConfigurationSet compute_config = {};
+    ConfigurationSet memory_config = {};
     bool found_compute = false, found_memory = false;
 
     for (int i = 0; i < config.config_count; i++) {
         if (strcmp(config.configurations[i].name, "compute_bound") == 0) {
             compute_params = config.configurations[i].params;
+            compute_config = config.configurations[i];
             found_compute = true;
         } else if (strcmp(config.configurations[i].name, "bandwidth_bound") == 0) {
             memory_params = config.configurations[i].params;
+            memory_config = config.configurations[i];
             found_memory = true;
         }
     }
@@ -389,7 +426,9 @@ std::vector<BenchmarkResult> generate_energy_matrix(const BenchmarkConfig& confi
     }
 
     std::cout << "Generating energy matrix (compute vs memory bound)..." << std::endl;
-    std::cout << "Array size: " << compute_params.N << " elements" << std::endl;
+    std::cout << "Array size: " << std::max(compute_params.N, memory_params.N) << " elements" << std::endl;
+    std::cout << "Compute bound: N=" << compute_params.N << ", count=" << compute_config.count << " iterations" << std::endl;
+    std::cout << "Memory bound: N=" << memory_params.N << ", count=" << memory_config.count << " iterations" << std::endl;
     std::cout << "Step: " << step << "%" << std::endl;
 
     int total_tests = ((100 / step) + 1) * ((100 / step) + 1);
@@ -405,12 +444,16 @@ std::vector<BenchmarkResult> generate_energy_matrix(const BenchmarkConfig& confi
                 continue;
             }
 
+            int compute_iters = static_cast<int>((compute / 100.0) * compute_config.count);
+            int memory_iters = static_cast<int>((memory / 100.0) * memory_config.count);
+
             std::cout << "Progress: " << current_test << "/" << total_tests 
-                      << " - Running: Compute=" << compute << "%, Memory=" << memory << "%" << std::endl;
+                      << " - Running: Compute=" << compute << "% (" << compute_iters << " iters), Memory=" 
+                      << memory << "% (" << memory_iters << " iters)" << std::endl;
 
             try {
                 BenchmarkResult result = run_energy_benchmark<Scalar>(
-                    compute_params, memory_params, compute, memory);
+                    compute_params, memory_params, compute_config, memory_config, compute, memory);
                 results.push_back(result);
             } catch(const std::exception& e) {
                 std::cerr << "[ERROR] Exception in benchmark (C=" << compute 
@@ -427,15 +470,27 @@ std::vector<BenchmarkResult> generate_energy_matrix(const BenchmarkConfig& confi
 void save_results_csv(const std::vector<BenchmarkResult>& results, const std::string& filename,
                      const BenchmarkConfig& config) {
     std::ofstream file(filename);
+    
+    if (!file.is_open()) {
+        std::cerr << "[ERROR] Cannot open output file: " << filename << std::endl;
+        return;
+    }
 
     file << "# Energy Matrix Benchmark Results\n";
     file << "# Device: " << Kokkos::DefaultExecutionSpace::name() << "\n";
     file << "# Global repetitions: " << config.global_repetitions << "\n";
-
-    file << "compute_percent,memory_percent,bandwidth_gb_s,execution_time_ms,array_size,compute_intensity,memory_intensity,avg_gpu_utilization,avg_memory_utilization,avg_power_usage_mW,avg_sm_clock_MHz,avg_mem_clock_MHz,avg_temperature_C\n";
+    file << "# Configuration details:\n";
+    
+    for (int i = 0; i < config.config_count; i++) {
+        file << "# " << config.configurations[i].name << ": count=" << config.configurations[i].count
+             << " N=" << config.configurations[i].params.N << "\n";
+    }
+    
+    file << "compute_percent,memory_percent,bandwidth_gb_s,execution_time_ms,array_size,compute_intensity_Mops,memory_intensity_Mops,avg_gpu_utilization,avg_memory_utilization,avg_power_usage_mW,avg_sm_clock_MHz,avg_mem_clock_MHz,avg_temperature_C\n";
 
     for(const auto& result : results) {
-        file << result.compute_percent << "," << result.memory_percent << ","
+        file << std::fixed << std::setprecision(2)
+             << result.compute_percent << "," << result.memory_percent << ","
              << result.bandwidth_gb_s << "," << result.execution_time_ms << ","
              << result.array_size << "," << result.compute_intensity << ","
              << result.memory_intensity << "," << result.avg_gpu_utilization << ","
@@ -449,22 +504,25 @@ void save_results_csv(const std::vector<BenchmarkResult>& results, const std::st
 }
 
 void print_matrix(const std::vector<BenchmarkResult>& results, int step) {
-    std::cout << "\nBandwidth Matrix (GB/s):" << std::endl;
+    std::cout << "\n=================================================" << std::endl;
+    std::cout << "ENERGY MATRIX RESULTS" << std::endl;
+    std::cout << "=================================================" << std::endl;
+    std::cout << "Bandwidth Matrix (GB/s):" << std::endl;
     std::cout << "Rows: Compute %, Columns: Memory %" << std::endl;
     std::cout << "Note: Case (0%,0%) is skipped as it has no computational meaning" << std::endl;
 
     std::cout << std::setw(8) << "C\\M";
     for(int memory = 0; memory <= 100; memory += step) {
-        std::cout << std::setw(8) << memory;
+        std::cout << std::setw(8) << memory << "%";
     }
     std::cout << std::endl;
 
     int cols = (100 / step) + 1;
     for(int compute = 0; compute <= 100; compute += step) {
-        std::cout << std::setw(8) << compute;
+        std::cout << std::setw(8) << compute << "%";
         for(int memory = 0; memory <= 100; memory += step) {
             int index = (compute / step) * cols + (memory / step);
-            if (index < results.size() && !(compute == 0 && memory == 0)) {
+            if (index < static_cast<int>(results.size()) && !(compute == 0 && memory == 0)) {
                 std::cout << std::setw(8) << std::fixed << std::setprecision(1) 
                           << results[index].bandwidth_gb_s;
             } else {
@@ -473,6 +531,7 @@ void print_matrix(const std::vector<BenchmarkResult>& results, int step) {
         }
         std::cout << std::endl;
     }
+    std::cout << "=================================================" << std::endl;
 }
 
 void average_results(std::vector<std::vector<BenchmarkResult>>& all_runs) {
@@ -532,9 +591,10 @@ int main(int argc, char* argv[]) {
         std::cout << "=================================================" << std::endl;
         std::cout << "Device: " << Kokkos::DefaultExecutionSpace::name() << std::endl << std::endl;
 
-        const char* configFile = "matrix_config.txt";
+        const char* configFile = nullptr;
         int step = 20;
 
+        // Parse command line arguments
         for (int i = 1; i < argc; i++) {
             std::string arg = argv[i];
             if (arg == "--config" || arg == "-c") {
@@ -545,16 +605,41 @@ int main(int argc, char* argv[]) {
                 if (i + 1 < argc) {
                     step = atoi(argv[++i]);
                 }
+            } else if (arg == "--help" || arg == "-h") {
+                std::cout << "Usage: " << argv[0] << " <config_file> [options]\n";
+                std::cout << "Options:\n";
+                std::cout << "  -c, --config <file>   Config file path (alternative to positional argument)\n";
+                std::cout << "  -s, --step <value>    Step size for matrix (default: 20)\n";
+                std::cout << "  -h, --help            Show this help message\n";
+                std::cout << "\nExample: " << argv[0] << " matrix_config.txt --step 10\n";
+                Kokkos::finalize();
+                return 0;
+            } else if (configFile == nullptr && arg[0] != '-') {
+                // First non-option argument is the config file
+                configFile = argv[i];
             }
+        }
+
+        // If no config file specified, show usage and exit
+        if (configFile == nullptr) {
+            std::cerr << "[ERROR] No configuration file specified.\n";
+            std::cerr << "Usage: " << argv[0] << " <config_file> [options]\n";
+            std::cerr << "Use --help for more information.\n";
+            Kokkos::finalize();
+            return 1;
         }
 
         BenchmarkConfig config;
         bool configOk = loadConfig(configFile, &config);
+        
         if (!configOk) {
-            fprintf(stderr, "[ERROR] Failed to load configuration. Exiting.\n");
+            fprintf(stderr, "[ERROR] Failed to load configuration from: %s\n", configFile);
+            fprintf(stderr, "Make sure the file exists and has the correct format.\n");
             Kokkos::finalize();
             return 1;
         }
+
+        std::cout << "Using config file: " << configFile << std::endl;
 
         std::cout << "Global repeats: " << config.global_repetitions << std::endl;
 

@@ -29,10 +29,21 @@ def find_data_files(input_dir):
 
 def get_config_file_path(input_dir):
     """
-    Returns the path to benchmark_config.txt if it exists in the input directory.
+    Returns the path to the config file, which can be either:
+    1. 'benchmark_config.txt' if it exists in the input directory, or
+    2. The only .txt file in the directory if there's exactly one
     """
+    # Check for benchmark_config.txt first
     config_file = os.path.join(input_dir, 'benchmark_config.txt')
-    return config_file if 'benchmark_config.txt' in os.listdir(input_dir) else None
+    if os.path.isfile(config_file):
+        return config_file
+    
+    # Look for any single .txt file
+    txt_files = [f for f in os.listdir(input_dir) if f.endswith('.txt')]
+    if len(txt_files) == 1:
+        return os.path.join(input_dir, txt_files[0])
+    
+    return None
 
 
 def generate_output_filename(power_file, output_arg, input_dir):
