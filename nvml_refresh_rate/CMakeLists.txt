@@ -1,0 +1,33 @@
+cmake_minimum_required(VERSION 3.16)
+project(gpu_power_sampling VERSION 1.0 LANGUAGES CXX CUDA)
+
+find_package(CUDAToolkit REQUIRED)
+
+set(NVML_FOUND FALSE)
+find_package(CUDAToolkit COMPONENTS nvml QUIET)
+if(TARGET CUDA::nvml)
+    set(NVML_LIB CUDA::nvml)
+    set(NVML_FOUND TRUE)
+else()
+    find_library(NVML_LIBRARY NAMES nvidia-ml nvml PATHS ${CUDAToolkit_LIBRARY_DIRS} /usr/lib /usr/local/lib /usr/local/cuda/lib64)
+    if(NVML_LIBRARY)
+        set(NVML_LIB ${NVML_LIBRARY})
+        set(NVML_FOUND TRUE)
+    endif()
+endif()
+if(NOT NVML_FOUND)
+    message(FATAL_ERROR "NVML library not found but is required for GPU power sampling")
+endif()
+
+find_library(CUBLAS_LIBRARY NAMES cublas PATHS ${CUDAToolkit_LIBRARY_DIRS} /usr/lib /usr/local/lib /usr/local/cuda/lib64)
+if(NOT CUBLAS_LIBRARY)
+    message(FATAL_ERROR "cuBLAS library not found but is required for GEMM benchmark")
+endif()
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+add_executable(gpu_power_sampling main.cpp)
+target_include_directories(gpu_power_sampling PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+target_link_libraries(gpu_power_sampling PRIVATE ${NVML_LIB} ${CUBLAS_LIBRARY} CUDA::cudart)
