@@ -10,12 +10,12 @@ import os
 
 # Configure matplotlib font sizes for better readability in plots
 plt.rcParams.update({
-    'font.size': 4,
+    'font.size': 8,
     'axes.titlesize': 9,
-    'axes.labelsize': 5,
-    'xtick.labelsize': 5,
-    'ytick.labelsize': 5,
-    'legend.fontsize': 5
+    'axes.labelsize': 8,
+    'xtick.labelsize': 8,
+    'ytick.labelsize': 8,
+    'legend.fontsize': 8
 })
 
 # Configure the matplotlib backend to avoid display issues
@@ -66,7 +66,8 @@ def plot_energy_matrix(csv_file="energy_matrix_results.csv"):
         ('execution_time_ms', 'Execution Time (ms)', 'plasma_r'),
         ('avg_gpu_utilization', 'GPU Utilization (%)', 'Reds'),
         ('avg_memory_utilization', 'Memory Utilization (%)', 'Blues'),
-        ('avg_power_usage_mW', 'Power Usage (mW)', 'hot'),
+        # Power usage now in Watts, with dark = high
+        ('avg_power_usage_mW', 'Power Usage (W)', 'Greys'),  # <- changed label and colormap
         ('avg_sm_clock_MHz', 'SM Clock (MHz)', 'copper'),
         ('avg_mem_clock_MHz', 'Memory Clock (MHz)', 'copper_r'),
         ('avg_temperature_C', 'Temperature (°C)', 'coolwarm')
@@ -83,20 +84,24 @@ def plot_energy_matrix(csv_file="energy_matrix_results.csv"):
     if n_rows == 1:
         axes = axes.reshape(1, -1)
 
-    fig.suptitle('GPU Performance Matrix - Compute vs Memory Bound Analysis',
-                 fontsize=16, fontweight='bold', y=0.98)
+    fig.suptitle('GPU Performance Matrix - Compute Load vs Bandwidth Load Analysis',
+                 fontsize=16, y=0.98)
 
     # Iterate through metrics and create a heatmap for each
     for idx, (metric, title, colormap) in enumerate(metrics):
         row = idx // n_cols
         col = idx % n_cols
-        ax = axes[row, col]
+        # Créer une figure individuelle pour chaque heatmap
+        fig_h, ax = plt.subplots(figsize=(8, 6))
 
         # Check if the metric column exists in the DataFrame
         if metric not in df.columns:
             ax.text(0.5, 0.5, f'Metric {metric}\nnot available',
                    ha='center', va='center', transform=ax.transAxes)
             ax.set_title(title)
+            # Save the figure even if metric is missing
+            fig_h.savefig(f"{csv_file.replace('.csv', f'_{metric}_heatmap.png')}", dpi=500, bbox_inches='tight', facecolor='white')
+            plt.close(fig_h)
             continue
 
         try:
@@ -111,14 +116,22 @@ def plot_energy_matrix(csv_file="energy_matrix_results.csv"):
             if 0 in matrix.index and 0 in matrix.columns:
                 matrix.loc[0, 0] = np.nan
 
+            # For power usage, convert mW to W for display
+            if metric == 'avg_power_usage_mW':
+                matrix = matrix / 1000.0
+                colormap = 'YlOrRd'  # Use a colored gradient for power (yellow→red)
+
             # Create the heatmap with a mask for NaN values
             mask = matrix.isnull()
-            im = sns.heatmap(matrix, annot=True, fmt='.1f', cmap=colormap, ax=ax,
-                           mask=mask, cbar_kws={'label': title.split('(')[1].rstrip(')')})
+            im = sns.heatmap(
+                matrix, annot=True, fmt='.1f', cmap=colormap, ax=ax,
+                mask=mask, cbar_kws={'label': title.split('(')[1].rstrip(')')},
+                annot_kws={"size": 10.5}
+            )
 
-            ax.set_title(title, fontweight='bold')
-            ax.set_xlabel('Memory Bound (%)')
-            ax.set_ylabel('Compute Bound (%)')
+            ax.set_title(title)
+            ax.set_xlabel('Bandwidth Load (%)', fontsize=9.75)  # 5 * 1.75
+            ax.set_ylabel('Compute Load (%)', fontsize=9.75)    # 5 * 1.75
 
             # Rotate x-axis labels for better readability
             ax.tick_params(axis='x', rotation=45)
@@ -129,21 +142,20 @@ def plot_energy_matrix(csv_file="energy_matrix_results.csv"):
                    ha='center', va='center', transform=ax.transAxes)
             ax.set_title(title)
 
+        # Save each heatmap to a separate file
+        out_heatmap = csv_file.replace('.csv', f'_{metric}_heatmap.png')
+        try:
+            fig_h.savefig(out_heatmap, dpi=500, bbox_inches='tight', facecolor='white')
+            print(f"Heatmap saved to: {out_heatmap}")
+        except Exception as e:
+            print(f"⚠️ Error saving heatmap {metric}: {e}")
+        plt.close(fig_h)
+
     # Remove any unused subplots
     for idx in range(n_metrics, n_rows * n_cols):
         row = idx // n_cols
         col = idx % n_cols
         axes[row, col].remove()
-
-    plt.tight_layout()
-
-    # Save the heatmaps to a file
-    output_file = csv_file.replace('.csv', '_heatmaps.png')
-    try:
-        plt.savefig(output_file, dpi=500, bbox_inches='tight', facecolor='white')
-        print(f"Heatmaps saved to: {output_file}")
-    except Exception as e:
-        print(f"⚠️ Error saving heatmaps: {e}")
 
     # Create and save separate performance curves
     create_performance_curves(df, csv_file)
@@ -168,88 +180,112 @@ def create_performance_curves(df, csv_file):
     df = df[~((df['compute_percent'] == 0) & (df['memory_percent'] == 0))].copy()
 
     try:
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        fig.suptitle('Performance Trends Analysis (excluding 0%/0% case)', fontsize=16, fontweight='bold')
-
         # 1. Bandwidth vs Compute for different Memory levels
-        ax1 = axes[0, 0]
+        fig1, ax1 = plt.subplots(figsize=(8, 6))
         memory_levels = sorted(df['memory_percent'].unique())
-        for memory in memory_levels[::2]:  # Plot every other level for readability
+        for memory in memory_levels[::2]:
             subset = df[df['memory_percent'] == memory]
             ax1.plot(subset['compute_percent'], subset['bandwidth_gb_s'],
-                    marker='o', label=f'Memory {memory}%', linewidth=2)
-        ax1.set_xlabel('Compute Bound (%)')
+                    marker='o', label=f'Bandwidth {memory}%', linewidth=2)
+        ax1.set_xlabel('Compute Load (%)')
         ax1.set_ylabel('Bandwidth (GB/s)')
-        ax1.set_title('Bandwidth vs Compute Level')
+        ax1.set_title('Bandwidth vs Compute Load')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
+        fig1.tight_layout()
+        out1 = csv_file.replace('.csv', '_bandwidth_vs_compute.png')
+        fig1.savefig(out1, dpi=500, bbox_inches='tight', facecolor='white')
+        print(f"Plot saved to: {out1}")
+        plt.close(fig1)
 
         # 2. Bandwidth vs Memory for different Compute levels
-        ax2 = axes[0, 1]
+        fig2, ax2 = plt.subplots(figsize=(8, 6))
         compute_levels = sorted(df['compute_percent'].unique())
         for compute in compute_levels[::2]:
             subset = df[df['compute_percent'] == compute]
             ax2.plot(subset['memory_percent'], subset['bandwidth_gb_s'],
                     marker='s', label=f'Compute {compute}%', linewidth=2)
-        ax2.set_xlabel('Memory Bound (%)')
+        ax2.set_xlabel('Bandwidth Load (%)')
         ax2.set_ylabel('Bandwidth (GB/s)')
-        ax2.set_title('Bandwidth vs Memory Level')
+        ax2.set_title('Bandwidth vs Bandwidth Load')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
+        fig2.tight_layout()
+        out2 = csv_file.replace('.csv', '_bandwidth_vs_bandwidth.png')
+        fig2.savefig(out2, dpi=500, bbox_inches='tight', facecolor='white')
+        print(f"Plot saved to: {out2}")
+        plt.close(fig2)
 
-        # 3. GPU Utilization vs Power
-        ax3 = axes[0, 2]
-        scatter = ax3.scatter(df['avg_gpu_utilization'], df['avg_power_usage_mW'],
-                             c=df['bandwidth_gb_s'], cmap='viridis', alpha=0.7, s=50)
+        # 3. GPU Utilization vs Power (Power in W, dark = high)
+        fig3, ax3 = plt.subplots(figsize=(8, 6))
+        scatter = ax3.scatter(
+            df['avg_gpu_utilization'],
+            df['avg_power_usage_mW'] / 1000.0,
+            c=df['bandwidth_gb_s'], cmap='viridis', alpha=0.7, s=50
+        )
         ax3.set_xlabel('GPU Utilization (%)')
-        ax3.set_ylabel('Power Usage (mW)')
+        ax3.set_ylabel('Power Usage (W)')
         ax3.set_title('GPU Utilization vs Power')
         plt.colorbar(scatter, ax=ax3, label='Bandwidth (GB/s)')
         ax3.grid(True, alpha=0.3)
+        fig3.tight_layout()
+        out3 = csv_file.replace('.csv', '_gpu_util_vs_power.png')
+        fig3.savefig(out3, dpi=500, bbox_inches='tight', facecolor='white')
+        print(f"Plot saved to: {out3}")
+        plt.close(fig3)
 
         # 4. Performance Efficiency (Bandwidth per Watt) heatmap
-        ax4 = axes[1, 0]
-        df['efficiency'] = df['bandwidth_gb_s'] / (df['avg_power_usage_mW'] / 1000.0)  # GB/s per Watt
-        df['efficiency'] = df['efficiency'].replace([np.inf, -np.inf], 0) # Handle potential inf/NaN from division by zero power
+        fig4, ax4 = plt.subplots(figsize=(8, 6))
+        df['efficiency'] = df['bandwidth_gb_s'] / (df['avg_power_usage_mW'] / 1000.0)
+        df['efficiency'] = df['efficiency'].replace([np.inf, -np.inf], 0)
         efficiency_matrix = df.pivot(index='compute_percent', columns='memory_percent', values='efficiency')
-
         if 0 in efficiency_matrix.index and 0 in efficiency_matrix.columns:
             efficiency_matrix.loc[0, 0] = np.nan
-
         mask = efficiency_matrix.isnull()
-        sns.heatmap(efficiency_matrix, annot=True, fmt='.2f', cmap='RdYlGn', ax=ax4, mask=mask)
+        sns.heatmap(
+            efficiency_matrix, annot=True, fmt='.2f', cmap='RdYlGn', ax=ax4, mask=mask,
+            annot_kws={"size": 7.5}
+        )
         ax4.set_title('Energy Efficiency (GB/s per Watt)')
-        ax4.set_xlabel('Memory Bound (%)')
-        ax4.set_ylabel('Compute Bound (%)')
+        ax4.set_xlabel('Bandwidth Load (%)')
+        ax4.set_ylabel('Compute Load (%)')
+        fig4.tight_layout()
+        out4 = csv_file.replace('.csv', '_efficiency_heatmap.png')
+        fig4.savefig(out4, dpi=500, bbox_inches='tight', facecolor='white')
+        print(f"Plot saved to: {out4}")
+        plt.close(fig4)
 
-        # 5. Temperature vs Performance
-        ax5 = axes[1, 1]
-        scatter2 = ax5.scatter(df['avg_temperature_C'], df['bandwidth_gb_s'],
-                              c=df['avg_power_usage_mW'], cmap='hot', alpha=0.7, s=50)
+        # 5. Temperature vs Performance (color by Power in W, dark = high)
+        fig5, ax5 = plt.subplots(figsize=(8, 6))
+        scatter2 = ax5.scatter(
+            df['avg_temperature_C'],
+            df['bandwidth_gb_s'],
+            c=df['avg_power_usage_mW'] / 1000.0, cmap='Greys', alpha=0.7, s=50
+        )
         ax5.set_xlabel('Temperature (°C)')
         ax5.set_ylabel('Bandwidth (GB/s)')
         ax5.set_title('Temperature vs Performance')
-        plt.colorbar(scatter2, ax=ax5, label='Power (mW)')
+        plt.colorbar(scatter2, ax=ax5, label='Power (W)')
         ax5.grid(True, alpha=0.3)
+        fig5.tight_layout()
+        out5 = csv_file.replace('.csv', '_temperature_vs_performance.png')
+        fig5.savefig(out5, dpi=500, bbox_inches='tight', facecolor='white')
+        print(f"Plot saved to: {out5}")
+        plt.close(fig5)
 
         # 6. Clock Speeds Correlation
-        ax6 = axes[1, 2]
+        fig6, ax6 = plt.subplots(figsize=(8, 6))
         ax6.scatter(df['avg_sm_clock_MHz'], df['avg_mem_clock_MHz'],
                    c=df['bandwidth_gb_s'], cmap='plasma', alpha=0.7, s=50)
         ax6.set_xlabel('SM Clock (MHz)')
         ax6.set_ylabel('Memory Clock (MHz)')
         ax6.set_title('Clock Speeds Correlation')
         ax6.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-
-        # Save the performance curves to a file
-        curves_file = csv_file.replace('.csv', '_performance_curves.png')
-        try:
-            plt.savefig(curves_file, dpi=500, bbox_inches='tight', facecolor='white')
-            print(f"Performance curves saved to: {curves_file}")
-        except Exception as e:
-            print(f"⚠️ Error saving performance curves: {e}")
+        fig6.tight_layout()
+        out6 = csv_file.replace('.csv', '_clock_speeds_correlation.png')
+        fig6.savefig(out6, dpi=500, bbox_inches='tight', facecolor='white')
+        print(f"Plot saved to: {out6}")
+        plt.close(fig6)
 
     except Exception as e:
         print(f"❌ Error creating performance curves: {e}")
