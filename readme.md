@@ -11,6 +11,3 @@ This repository offers a collection of benchmarks and example codes designed for
 
 - **Custom Configuration:**  
     Some benchmarks support user-defined configuration files for flexible experimentation.
-
-- **Post-processing & Visualization:**  
-    Tools are included to help you analyze and visualize your energy profiling results.

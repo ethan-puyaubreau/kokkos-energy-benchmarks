@@ -3,7 +3,7 @@
 # Configuration line format: name count P N K R D U F T S B I
 #
 # Parameter descriptions:
-# name - Name of the configuration set
+# name - Name of the configuration set (bandwidth_bound or compute_bound)
 # count - Number of times to run this kernel type
 # P - Data type (1=float, 2=double, 3=int32_t, 4=int64_t)
 # N - Problem size (number of elements)

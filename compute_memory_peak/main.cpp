@@ -2,7 +2,7 @@
 #include <Kokkos_Timer.hpp>
 #include <iostream>
 #include <chrono>
-#include <thread> // Required for std::this_thread::sleep_for
+#include <thread>
 #include <vector>
 #include <iomanip>
 
